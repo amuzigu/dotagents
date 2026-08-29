@@ -1,0 +1,4 @@
+interface:
+  display_name: "video-summary"
+  short_description: "提炼主线与关键证据，按需加入清晰画面的在线视频总结"
+  default_prompt: "使用 $video-summary 总结这个 YouTube、Bilibili 或 X 视频链接，采用 balanced 模式并按时间段说明核心内容。"
