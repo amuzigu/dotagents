@@ -23,11 +23,19 @@
     "status": "ready|selecting|needs_asr|failed",
     "source": "manual-caption|automatic-caption|local-asr|xai-stt",
     "language": "en",
+    "raw_cue_count": 720,
     "segment_count": 500,
     "paths": {
       "markdown": "transcript.active.md",
       "jsonl": "transcript.active.jsonl",
-      "index": "transcript.active.index.json"
+      "index": "transcript.active.index.json",
+      "raw_jsonl": "transcript.active.raw.jsonl"
+    },
+    "compaction": {
+      "segments_removed": 220,
+      "segment_reduction_ratio": 0.31,
+      "character_reduction_ratio": 0.31,
+      "jsonl_character_reduction_ratio": 0.42
     }
   },
   "audio": {
@@ -45,13 +53,34 @@
 稳定入口文件：
 
 - `acquisition.json`：当前采集状态、媒体摘要、active transcript、音频结果和下一步动作。
-- `transcript.active.md`：适合连续阅读的当前 transcript。
-- `transcript.active.jsonl`：规范 segment 数据，每行包含 segment ID 和毫秒时间。
-- `transcript.active.index.json`：segment 总数、时间范围、连续 chunk 索引和平台章节。
+- `transcript.active.md`：适合连续阅读的压缩 transcript。
+- `transcript.active.jsonl`：规范 segment 数据，每行包含 segment ID、毫秒时间和必要的原始 cue 范围。
+- `transcript.active.index.json`：原始 cue 数、压缩后 segment 数、字符压缩率、时间范围、连续 chunk 索引和平台章节。
+- `transcript.active.raw.jsonl`：规范化前的逐 cue 文本，仅用于核查发生合并的具体证据。
 - `media.info.json`：完整平台元数据，供诊断和高风险事实复核。
 - `audio/result.json`：音频采集尝试、策略、耗时、失败类型和输出文件。
 
 `captions` 找不到可用字幕时会正常写入 `transcript.status: needs_asr` 和 `next_action: download_audio`。Agent 继续执行音频与 ASR 链路。
+
+## Cue 压缩
+
+字幕和 ASR 归一化时自动执行保守压缩：
+
+- 合并时间相邻或重叠的完全重复文本。
+- 合并短时间内以前缀或后缀累积扩展的滚动字幕。
+- 只有时间实际重叠、词项重叠比例至少 40%，且英文重叠至少 2 个词并达到 8 个字符或中文重叠至少 4 个字时，才拼接滑动窗口。
+- 连续残句在句末标点、说话人标记或音效 cue 处停止合并。
+- 单个合并结果最长 20 秒、最多 400 字符；距离较远的重复文本保持原样。
+
+发生合并的 segment 带有 `source_cues.start` 和 `source_cues.end`。原始 cue 保存在 `transcript.active.raw.jsonl`，压缩统计保存在 index 和 `acquisition.json`。常规工作流只读取 active transcript。某条重点证据出现语义跳跃、引文异常或时间范围疑点时，按来源范围核查：
+
+```bash
+python3 <skill-dir>/scripts/acquire_video.py transcript-slice \
+  --input '<work-dir>/transcript.active.raw.jsonl' \
+  --cue-start 31 --cue-end 33
+```
+
+压缩后的 `segment_count` 用于完整覆盖检查；`raw_cue_count` 只描述平台字幕或 ASR 的原始切分粒度。连续 chunk 同时受 200 segments 和约 12k 字符约束，先达到的上限形成边界，避免语义合并后单个读取块膨胀。
 
 ## 字幕选择
 
