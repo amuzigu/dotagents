@@ -2,7 +2,58 @@
 
 根据 URL 只读取对应平台分支。基础素材层包括平台正文与元数据、带时间信息的 transcript；核心结论通过严格视觉门槛后，再增加关键画面作为定向证据。
 
-## 统一字幕选择
+## 统一采集接口
+
+字幕、音频和转写子命令都更新 `<work-dir>/acquisition.json`。Agent 每次采集后先读取该文件，并通过 `next_action` 决定下一步。字幕、xAI STT 和本地 ASR 共用同一组 active transcript 文件，后续总结无需识别上游来源。
+
+核心字段：
+
+```json
+{
+  "version": 1,
+  "url": "https://…",
+  "platform": "youtube|bilibili|x|unknown",
+  "media": {
+    "id": "…",
+    "title": "…",
+    "duration_ms": 1234500,
+    "original_language": "en"
+  },
+  "transcript": {
+    "status": "ready|selecting|needs_asr|failed",
+    "source": "manual-caption|automatic-caption|local-asr|xai-stt",
+    "language": "en",
+    "segment_count": 500,
+    "paths": {
+      "markdown": "transcript.active.md",
+      "jsonl": "transcript.active.jsonl",
+      "index": "transcript.active.index.json"
+    }
+  },
+  "audio": {
+    "status": "ready|failed",
+    "path": "media.m4a",
+    "strategy": "direct_url|direct_url_refreshed|yt_dlp"
+  },
+  "paths": {
+    "media_info": "media.info.json"
+  },
+  "next_action": "select_transcript|download_audio|transcribe|summarize|resolve_audio_access"
+}
+```
+
+稳定入口文件：
+
+- `acquisition.json`：当前采集状态、媒体摘要、active transcript、音频结果和下一步动作。
+- `transcript.active.md`：适合连续阅读的当前 transcript。
+- `transcript.active.jsonl`：规范 segment 数据，每行包含 segment ID 和毫秒时间。
+- `transcript.active.index.json`：segment 总数、时间范围、连续 chunk 索引和平台章节。
+- `media.info.json`：完整平台元数据，供诊断和高风险事实复核。
+- `audio/result.json`：音频采集尝试、策略、耗时、失败类型和输出文件。
+
+`captions` 找不到可用字幕时会正常写入 `transcript.status: needs_asr` 和 `next_action: download_audio`。Agent 继续执行音频与 ASR 链路。
+
+## 字幕选择
 
 `acquire_video.py captions` 先读取完整元数据，再对字幕轨道评分，只下载最高分轨道。原生语言优先于输出语言；翻译发生在最终总结阶段。
 
@@ -15,19 +66,13 @@
 
 原生语言依次来自命令行覆盖、平台元数据、Original 字幕标记、唯一人工字幕语言。前三种属于高置信，可自动作为 ASR 语言提示；唯一人工字幕语言属于中等置信，ASR 使用自动检测。
 
-输出文件：
-
-- `selected.transcript.md`：最终选择的时间轴文本。
-- `selected.transcript.jsonl`：规范 transcript 数据，每行一个带 segment ID 和毫秒时间的片段。
-- `selected.transcript.index.json`：segment 总数、时间范围、连续 chunk 索引和平台章节。
-- `caption-selection.json`：原生语言判断、所有候选轨道、评分、选择结果和 ASR 建议。
-- `media.info.json`：完整平台元数据。
+字幕选择详情保存在 `caption-selection.json`，并嵌入 `acquisition.json` 的 transcript details。常规工作流读取 active transcript；需要检查轨道评分和语言判断时再打开详情文件。
 
 长 transcript 按索引中的 chunk 连续读取：
 
 ```bash
 python3 <skill-dir>/scripts/acquire_video.py transcript-slice \
-  --input '<work-dir>/selected.transcript.jsonl' \
+  --input '<work-dir>/transcript.active.jsonl' \
   --segment-start 0 --segment-end 199
 ```
 
@@ -43,8 +88,10 @@ python3 <skill-dir>/scripts/acquire_video.py transcript-slice \
 
 1. 使用 `acquire_video.py captions` 获取字幕、章节和元数据。Bilibili CC 字幕可能要求登录。
 2. 登录字幕确有必要时，先取得用户授权，再为命令增加 `--cookies-from-browser <browser>`。浏览器参数使用本机实际浏览器名称。
-3. 视频没有 CC 字幕时，使用 `audio` 子命令下载音频，再调用可用 ASR。弹幕只用于发现观众关注点，不作为视频陈述的事实依据。
+3. 视频没有 CC 字幕时，使用 `audio` 子命令下载音频，再调用可用 ASR。音频采集按固定顺序执行：读取缓存的媒体元数据并直连音频流；遇到 URL 过期、403、412 或鉴权失败时刷新一次元数据并重试；直连仍未产出有效文件时调用 `yt-dlp` 回退。弹幕只用于发现观众关注点，不作为视频陈述的事实依据。
 4. 多分 P、合集或番剧按实际条目建立独立时间轴；最终总结明确当前 URL 覆盖的分集或分 P。
+
+音频命令结束后读取 `acquisition.json`。成功时 `audio.status` 为 `ready`，`audio.strategy` 说明实际路径；`next_action` 通常为 `transcribe`。诊断细节位于 `audio/result.json`，其中记录每次尝试的输入类型、格式、返回码、耗时和失败分类。临时文件在成功、失败和中断路径中统一清理。
 
 ## X
 

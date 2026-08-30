@@ -67,7 +67,7 @@ whisper-cli -m '<local-ggml-model.bin>' -f '<work-dir>/media.wav' \
   -ojf -of '<work-dir>/local-asr' -l auto
 ```
 
-`caption-selection.json` 中存在高置信 `asr_language_hint` 时，把它传给 CLI 的语言参数。其余情况使用自动语言检测。模型使用视频原生语言能力；转译在总结阶段完成。
+`acquisition.json` 的 `transcript.asr_language_hint` 存在时，把它传给 CLI 的语言参数。其余情况使用自动语言检测。模型使用视频原生语言能力；转译在总结阶段完成。需要核查语言推断细节时再读取 `caption-selection.json`。
 
 ## 统一输出
 
@@ -78,7 +78,7 @@ python3 <skill-dir>/scripts/acquire_video.py normalize-asr \
   --input '<asr-output.srt|vtt|json>' --output '<work-dir>'
 ```
 
-归一化会生成 `local-asr.transcript.md`、`local-asr.transcript.jsonl` 和 `local-asr.transcript.index.json`。JSONL 是规范 segment 数据，index 提供连续 chunks；长 transcript 使用 `transcript-slice` 逐块覆盖。保留 `local-asr-source.json` 作为来源记录。抽查开头、中段、结尾、专有名词密集处和低置信片段。需要时间戳修复时再调用 Stable-ts，避免为普通总结增加额外计算。
+归一化会发布 `transcript.active.md`、`transcript.active.jsonl` 和 `transcript.active.index.json`，并把 `acquisition.json` 更新为 `transcript.status: ready`、`next_action: summarize`。JSONL 是规范 segment 数据，index 提供连续 chunks；长 transcript 使用 `transcript-slice` 逐块覆盖。`asr.source.json` 保留输入文件、格式和语言等来源记录。抽查开头、中段、结尾、专有名词密集处和低置信片段。需要时间戳修复时再调用 Stable-ts，避免为普通总结增加额外计算。
 
 ## 安装与下载边界
 

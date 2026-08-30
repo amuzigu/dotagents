@@ -22,6 +22,8 @@ from pathlib import Path
 
 DEFAULT_FALLBACK_LANGUAGES = ("en", "zh-Hans", "zh-Hant", "zh")
 SUPPORTED_SUBTITLE_EXTENSIONS = ("json3", "srt", "vtt")
+ACQUISITION_MANIFEST = "acquisition.json"
+ACTIVE_TRANSCRIPT_MARKDOWN = "transcript.active.md"
 ORIGINAL_MARKERS = ("original", "原始", "原文")
 TRANSLATION_MARKERS = (" from ", "translated", "translation", "翻译", "翻譯")
 LANGUAGE_ALIASES = {
@@ -132,6 +134,16 @@ def transcript_bundle_paths(markdown: Path) -> tuple[Path, Path]:
         markdown.with_name(f"{stem}.jsonl"),
         markdown.with_name(f"{stem}.index.json"),
     )
+
+
+def load_json_object(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def write_transcript(path: Path, rows: list[tuple[int, int, str]]) -> Path:
@@ -494,61 +506,141 @@ def indexed_chapters(media_info: dict) -> list[dict]:
     return chapters
 
 
-def attach_media_chapters(transcript: Path, output: Path) -> None:
-    info_path = output / "media.info.json"
-    if not info_path.is_file():
-        return
-    try:
-        media_info = json.loads(info_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return
-    _, index_path = transcript_bundle_paths(transcript)
-    index = json.loads(index_path.read_text(encoding="utf-8"))
-    index["chapters"] = indexed_chapters(media_info)
-    index_path.write_text(
-        json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+def platform_label(info: dict) -> str:
+    marker = " ".join(
+        str(info.get(field) or "")
+        for field in ("extractor_key", "extractor", "webpage_url_domain")
+    ).lower()
+    if "youtube" in marker:
+        return "youtube"
+    if "bilibili" in marker:
+        return "bilibili"
+    if any(value in marker for value in ("twitter", "x.com")):
+        return "x"
+    return str(info.get("extractor_key") or info.get("extractor") or "unknown").lower()
+
+
+def media_acquisition_fields(info: dict, requested_url: str | None) -> dict:
+    duration = info.get("duration")
+    duration_ms = (
+        round(float(duration) * 1000)
+        if isinstance(duration, (int, float))
+        else None
     )
+    return {
+        "url": info.get("webpage_url") or info.get("original_url") or requested_url,
+        "platform": platform_label(info),
+        "media": {
+            "id": info.get("id"),
+            "title": info.get("title"),
+            "uploader": info.get("uploader"),
+            "channel": info.get("channel"),
+            "duration_ms": duration_ms,
+            "upload_date": info.get("upload_date"),
+            "original_language": normalize_language(info.get("language")),
+            "chapters": indexed_chapters(info),
+        },
+        "paths": {"media_info": "media.info.json"},
+    }
 
 
-def write_selected_transcript(
+def update_acquisition(
+    output: Path,
+    *,
+    requested_url: str | None = None,
+    info: dict | None = None,
+    transcript: dict | None = None,
+    audio: dict | None = None,
+    next_action: str | None = None,
+) -> Path:
+    path = output / ACQUISITION_MANIFEST
+    manifest = load_json_object(path)
+    manifest["version"] = 1
+    if info is not None:
+        manifest.update(media_acquisition_fields(info, requested_url))
+    elif requested_url and not manifest.get("url"):
+        manifest["url"] = requested_url
+    if transcript is not None:
+        manifest["transcript"] = transcript
+    if audio is not None:
+        manifest["audio"] = audio
+    if next_action is not None:
+        manifest["next_action"] = next_action
+    write_json_atomic(path, manifest)
+    return path
+
+
+def publish_active_transcript(
     output: Path,
     transcript: Path,
-    selected: dict,
+    *,
+    source: str,
+    language: str | None,
     original_language: str | None,
     media_info: dict,
-) -> Path:
-    body = transcript.read_text(encoding="utf-8").splitlines()
-    if body and body[0].startswith("# "):
-        body = body[2:]
-    target = output / "selected.transcript.md"
-    lines = [
-        "# Selected transcript",
+    details: dict | None = None,
+) -> tuple[Path, dict]:
+    source_lines = transcript.read_text(encoding="utf-8").splitlines()
+    if source_lines and source_lines[0].startswith("# "):
+        source_lines = source_lines[2:]
+    active = output / ACTIVE_TRANSCRIPT_MARKDOWN
+    header = [
+        "# Active transcript",
         "",
-        f"- Language: `{selected['code']}`",
-        f"- Source: `{selected['source']}`",
+        f"- Source: `{source}`",
+        f"- Language: `{language or 'unknown'}`",
         f"- Original language: `{original_language or 'unknown'}`",
-        f"- Selection score: `{selected['score']}`",
         "",
-        *body,
     ]
-    target.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    active.write_text(
+        "\n".join([*header, *source_lines]).rstrip() + "\n",
+        encoding="utf-8",
+    )
     source_jsonl, source_index = transcript_bundle_paths(transcript)
-    target_jsonl, target_index = transcript_bundle_paths(target)
-    shutil.copyfile(source_jsonl, target_jsonl)
-    index = json.loads(source_index.read_text(encoding="utf-8"))
+    active_jsonl, active_index = transcript_bundle_paths(active)
+    shutil.copyfile(source_jsonl, active_jsonl)
+    index = load_json_object(source_index)
     index.update({
+        "version": 1,
         "source": transcript.name,
-        "markdown": target.name,
-        "jsonl": target_jsonl.name,
-        "language": selected["code"],
-        "caption_source": selected["source"],
+        "markdown": active.name,
+        "jsonl": active_jsonl.name,
+        "transcript_source": source,
+        "language": language,
         "original_language": original_language,
         "chapters": indexed_chapters(media_info),
     })
-    target_index.write_text(
-        json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+    write_json_atomic(active_index, index)
+    duration = media_info.get("duration")
+    duration_ms = (
+        round(float(duration) * 1000)
+        if isinstance(duration, (int, float))
+        else None
     )
-    return target
+    end_ms = index.get("end_ms")
+    coverage = (
+        round(min(1.0, max(0.0, float(end_ms) / duration_ms)), 4)
+        if isinstance(end_ms, (int, float)) and duration_ms
+        else None
+    )
+    manifest = {
+        "status": "ready",
+        "source": source,
+        "language": language,
+        "original_language": original_language,
+        "segment_count": index.get("segment_count"),
+        "start_ms": index.get("start_ms"),
+        "end_ms": end_ms,
+        "coverage": coverage,
+        "paths": {
+            "markdown": active.name,
+            "jsonl": active_jsonl.name,
+            "index": active_index.name,
+        },
+    }
+    if details:
+        manifest["details"] = details
+    return active, manifest
 
 
 def acquire_captions(args: argparse.Namespace) -> None:
@@ -567,6 +659,13 @@ def acquire_captions(args: argparse.Namespace) -> None:
     (output / "media.info.json").write_text(
         json.dumps(info, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
+    )
+    update_acquisition(
+        output,
+        requested_url=args.url,
+        info=info,
+        transcript={"status": "selecting"},
+        next_action="select_transcript",
     )
     preferred_languages = [
         language.strip() for language in args.preferred_languages.split(",") if language.strip()
@@ -590,8 +689,24 @@ def acquire_captions(args: argparse.Namespace) -> None:
         preferred_languages,
     )
     if selected is None:
-        print(report_path)
-        raise SystemExit("No usable embedded captions were found. Continue with audio transcription.")
+        acquisition_path = update_acquisition(
+            output,
+            requested_url=args.url,
+            info=info,
+            transcript={
+                "status": "needs_asr",
+                "source": None,
+                "language": None,
+                "original_language": original_language,
+                "asr_language_hint": (
+                    original_language if original_confidence == "high" else None
+                ),
+                "details": {"caption_selection": report_path.name},
+            },
+            next_action="download_audio",
+        )
+        print(acquisition_path)
+        return
 
     caption_flag = "--write-subs" if selected["source"] == "manual" else "--write-auto-subs"
     download_command = [
@@ -611,14 +726,26 @@ def acquire_captions(args: argparse.Namespace) -> None:
     run(download_command)
     caption_file = find_selected_caption_file(output, selected["code"])
     transcript = convert_subtitle(caption_file)
-    selected_transcript = write_selected_transcript(
-        output, transcript, selected, original_language, info,
+    _, transcript_manifest = publish_active_transcript(
+        output,
+        transcript,
+        source=f"{selected['source']}-caption",
+        language=selected["code"],
+        original_language=original_language,
+        media_info=info,
+        details={
+            "caption_selection": report_path.name,
+            "selection_score": selected["score"],
+        },
     )
-    print(selected_transcript)
-    selected_jsonl, selected_index = transcript_bundle_paths(selected_transcript)
-    print(selected_jsonl)
-    print(selected_index)
-    print(report_path)
+    acquisition_path = update_acquisition(
+        output,
+        requested_url=args.url,
+        info=info,
+        transcript=transcript_manifest,
+        next_action="summarize",
+    )
+    print(acquisition_path)
 
 
 def find_downloaded_media(output: Path, command_output: str, stem: str) -> Path:
@@ -636,28 +763,258 @@ def find_downloaded_media(output: Path, command_output: str, stem: str) -> Path:
     raise SystemExit(f"Unable to identify downloaded {stem} file.")
 
 
-def acquire_audio(args: argparse.Namespace) -> None:
-    require_program("yt-dlp")
-    require_program("ffmpeg")
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=True)
+def audio_format_candidates(info: dict) -> list[dict]:
+    candidates = []
+    for candidate in info.get("formats") or []:
+        if not isinstance(candidate, dict) or candidate.get("has_drm"):
+            continue
+        acodec = str(candidate.get("acodec") or "none").lower()
+        vcodec = str(candidate.get("vcodec") or "none").lower()
+        url = str(candidate.get("url") or "")
+        if acodec == "none" or vcodec != "none" or not url.startswith(("http://", "https://")):
+            continue
+        candidates.append(candidate)
+    protocol_rank = {
+        "https": 5,
+        "http": 5,
+        "m3u8_native": 4,
+        "m3u8": 4,
+        "http_dash_segments": 3,
+        "dash": 3,
+    }
+    return sorted(
+        candidates,
+        key=lambda candidate: (
+            float(candidate.get("abr") or candidate.get("tbr") or 0),
+            protocol_rank.get(protocol_name(candidate), 1),
+            float(candidate.get("quality") or 0),
+        ),
+        reverse=True,
+    )
+
+
+def audio_candidate_summary(candidate: dict, duration: object) -> dict:
+    return {
+        "format_id": candidate.get("format_id"),
+        "protocol": protocol_name(candidate),
+        "ext": candidate.get("ext"),
+        "acodec": candidate.get("acodec"),
+        "abr": candidate.get("abr"),
+        "estimated_bytes": format_size_estimate(candidate, duration),
+    }
+
+
+def serialized_http_headers(headers: dict[str, str]) -> str:
+    return "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+
+
+def ffmpeg_audio_command(
+    info: dict,
+    candidate: dict,
+    target: Path,
+    requested_format: str,
+    timeout: float,
+) -> dict:
+    command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y"]
+    headers = merged_http_headers(info, candidate)
+    if headers:
+        command.extend(["-headers", serialized_http_headers(headers)])
+    command.extend(["-i", str(candidate["url"]), "-vn"])
+    acodec = str(candidate.get("acodec") or "").lower()
+    if requested_format == "m4a":
+        if any(marker in acodec for marker in ("aac", "mp4a")):
+            command.extend(["-c:a", "copy"])
+        else:
+            command.extend(["-c:a", "aac", "-b:a", "128k"])
+    elif requested_format == "wav":
+        command.extend(["-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1"])
+    elif requested_format == "mp3":
+        command.extend(["-c:a", "libmp3lame", "-b:a", "128k"])
+    elif requested_format == "opus":
+        command.extend(["-c:a", "libopus", "-b:a", "96k"])
+    command.append(str(target))
+    return run_bounded(command, timeout)
+
+
+def yt_dlp_audio_command(
+    args: argparse.Namespace,
+    temp_dir: Path,
+    candidate: dict | None,
+) -> dict:
+    selector = str(candidate.get("format_id")) if candidate and candidate.get("format_id") else "bestaudio/best"
     command = [
         "yt-dlp",
         "--no-playlist",
+        "--force-overwrites",
         "--format",
-        "bestaudio/best",
+        selector,
         "--extract-audio",
         "--audio-format",
         args.format,
-        "--write-info-json",
         "--output",
-        str(output / "media.%(ext)s"),
+        str(temp_dir / "media.%(ext)s"),
         "--print",
         "after_move:filepath",
         *cookie_arguments(args),
         args.url,
     ]
-    print(find_downloaded_media(output, run(command), "media"))
+    return run_bounded(command, args.timeout)
+
+
+def require_audio_output(outcome: dict, target: Path | None) -> dict:
+    if outcome["returncode"] != 0:
+        return outcome
+    if target is not None and target.is_file() and target.stat().st_size > 0:
+        return outcome
+    failed = dict(outcome)
+    failed["returncode"] = 1
+    failed["stderr"] = "Audio command completed without a non-empty output file."
+    return failed
+
+
+def acquire_audio(args: argparse.Namespace) -> None:
+    require_program("yt-dlp")
+    require_program("ffmpeg")
+    if args.timeout <= 0:
+        raise SystemExit("Audio process timeout must be positive.")
+    if not re.fullmatch(r"[a-zA-Z0-9]+", args.format):
+        raise SystemExit("Audio format must contain only letters and digits.")
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    audio_dir = output / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    result_path = audio_dir / "result.json"
+    temp_dir = output / f".audio-{uuid.uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=False)
+    started = time.monotonic()
+    report = {
+        "version": 1,
+        "url": args.url,
+        "status": "failed",
+        "requested_format": args.format,
+        "metadata_refreshed": False,
+        "attempts": [],
+    }
+    info = load_json_object(output / "media.info.json")
+    if info:
+        report["metadata_source"] = "cache"
+    else:
+        info, metadata_outcome = refresh_media_info(args, output)
+        report["attempts"].append(process_attempt("metadata", metadata_outcome))
+        report["metadata_source"] = "fresh" if info else "unavailable"
+    candidate: dict | None = None
+    source: Path | None = None
+    strategy: str | None = None
+    try:
+        if info and platform_label(info) == "bilibili":
+            candidates = audio_format_candidates(info)
+            candidate = candidates[0] if candidates else None
+            if candidate:
+                direct_target = temp_dir / f"media.{args.format}"
+                direct = ffmpeg_audio_command(
+                    info, candidate, direct_target, args.format, args.timeout,
+                )
+                direct = require_audio_output(direct, direct_target)
+                summary = audio_candidate_summary(candidate, info.get("duration"))
+                report["attempts"].append(process_attempt("direct_url", direct, summary))
+                if direct["returncode"] == 0:
+                    source, strategy = direct_target, "direct_url"
+                elif failure_code(direct) == "url-or-auth":
+                    refreshed_info, metadata_outcome = refresh_media_info(args, output)
+                    report["metadata_refreshed"] = True
+                    report["attempts"].append(process_attempt("metadata_refresh", metadata_outcome))
+                    if refreshed_info:
+                        info = refreshed_info
+                        candidates = audio_format_candidates(info)
+                        candidate = candidates[0] if candidates else None
+                        if candidate:
+                            refreshed_target = temp_dir / f"media-refreshed.{args.format}"
+                            retried = ffmpeg_audio_command(
+                                info, candidate, refreshed_target, args.format, args.timeout,
+                            )
+                            retried = require_audio_output(retried, refreshed_target)
+                            summary = audio_candidate_summary(candidate, info.get("duration"))
+                            report["attempts"].append(
+                                process_attempt("direct_url_refreshed", retried, summary)
+                            )
+                            if retried["returncode"] == 0:
+                                source, strategy = refreshed_target, "direct_url_refreshed"
+
+        if source is None:
+            fallback = yt_dlp_audio_command(args, temp_dir, candidate)
+            fallback_source: Path | None = None
+            if fallback["returncode"] == 0:
+                try:
+                    fallback_source = find_downloaded_media(
+                        temp_dir, fallback["stdout"], "media",
+                    )
+                except SystemExit as error:
+                    fallback = dict(fallback)
+                    fallback["returncode"] = 1
+                    fallback["stderr"] = str(error)
+                fallback = require_audio_output(fallback, fallback_source)
+            summary = (
+                audio_candidate_summary(candidate, info.get("duration"))
+                if candidate and info else None
+            )
+            report["attempts"].append(process_attempt("yt_dlp", fallback, summary))
+            if fallback["returncode"] == 0:
+                source = fallback_source
+                strategy = "yt_dlp"
+
+        if source is None or strategy is None:
+            report.update({
+                "status": "failed",
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+                "error_code": (
+                    report["attempts"][-1].get("error_code")
+                    if report["attempts"] else "media-unavailable"
+                ),
+            })
+            write_json_atomic(result_path, report)
+            update_acquisition(
+                output,
+                requested_url=args.url,
+                info=info or None,
+                audio={
+                    "status": "failed",
+                    "result": str(result_path.relative_to(output)),
+                    "error_code": report.get("error_code"),
+                },
+                next_action="resolve_audio_access",
+            )
+            raise SystemExit(f"Audio acquisition failed. Read {result_path}.")
+
+        target = output / f"media.{args.format}"
+        os.replace(source, target)
+        report.update({
+            "status": "success",
+            "strategy": strategy,
+            "path": str(target.relative_to(output)),
+            "bytes": target.stat().st_size,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+        })
+        write_json_atomic(result_path, report)
+        transcript_status = load_json_object(output / ACQUISITION_MANIFEST).get("transcript", {})
+        acquisition_path = update_acquisition(
+            output,
+            requested_url=args.url,
+            info=info or None,
+            audio={
+                "status": "ready",
+                "path": str(target.relative_to(output)),
+                "format": args.format,
+                "bytes": target.stat().st_size,
+                "strategy": strategy,
+                "result": str(result_path.relative_to(output)),
+            },
+            next_action=(
+                "summarize" if transcript_status.get("status") == "ready" else "transcribe"
+            ),
+        )
+        print(acquisition_path)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def timestamp_label(seconds: float) -> str:
@@ -730,14 +1087,16 @@ def failure_code(outcome: dict) -> str:
     if outcome.get("timed_out"):
         return "timeout"
     diagnostic = outcome.get("stderr", "").lower()
-    if any(marker in diagnostic for marker in ("401", "403", "forbidden", "unauthorized", "expired")):
+    if any(marker in diagnostic for marker in (
+        "401", "403", "412", "forbidden", "unauthorized", "expired", "precondition failed",
+    )):
         return "url-or-auth"
     if any(marker in diagnostic for marker in ("connection", "timed out", "network is unreachable")):
         return "network"
     return "process-failed"
 
 
-def refresh_frame_media_info(args: argparse.Namespace, output: Path) -> tuple[dict | None, dict]:
+def refresh_media_info(args: argparse.Namespace, output: Path) -> tuple[dict | None, dict]:
     command = [
         "yt-dlp", "--no-playlist", "--skip-download", "--dump-single-json",
         *cookie_arguments(args), args.url,
@@ -1177,7 +1536,7 @@ def acquire_frames(args: argparse.Namespace) -> None:
             except json.JSONDecodeError:
                 pass
         if info is None:
-            info, outcome = refresh_frame_media_info(args, output)
+            info, outcome = refresh_media_info(args, output)
             report["metadata"].append(process_attempt("metadata_fetch", outcome))
         if info is None:
             raise RuntimeError("Unable to acquire media metadata for frame extraction.")
@@ -1189,7 +1548,7 @@ def acquire_frames(args: argparse.Namespace) -> None:
                 request, result, info, temp_dir, frames_dir, args.timeout,
             )
             if expired and not refreshed:
-                refreshed_info, outcome = refresh_frame_media_info(args, output)
+                refreshed_info, outcome = refresh_media_info(args, output)
                 report["metadata"].append(process_attempt("metadata_refresh", outcome))
                 refreshed = True
                 report["metadata_refresh_attempted"] = True
@@ -1350,6 +1709,11 @@ def words_to_row(words: list[dict]) -> tuple[int, int, str]:
 
 
 def infer_asr_language(output: Path) -> tuple[str | None, str]:
+    acquisition = load_json_object(output / ACQUISITION_MANIFEST)
+    transcript = acquisition.get("transcript")
+    if isinstance(transcript, dict):
+        if language := normalize_language(transcript.get("asr_language_hint")):
+            return language, "acquisition manifest"
     report_path = output / "caption-selection.json"
     if report_path.is_file():
         report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -1401,13 +1765,32 @@ def transcribe_xai(args: argparse.Namespace) -> None:
         duration = round(float(result.get("duration", 0)) * 1000)
         rows = [(0, duration, normalize_caption_text(result.get("text", "")))]
     transcript_path = write_transcript(output / "xai-stt.json", rows)
-    attach_media_chapters(transcript_path, output)
-    transcript_jsonl, transcript_index = transcript_bundle_paths(transcript_path)
-    print(request_path)
-    print(raw_path)
-    print(transcript_path)
-    print(transcript_jsonl)
-    print(transcript_index)
+    media_info = load_json_object(output / "media.info.json")
+    actual_language = normalize_language(result.get("language")) or language
+    acquisition = load_json_object(output / ACQUISITION_MANIFEST)
+    original_language = normalize_language(
+        (acquisition.get("media") or {}).get("original_language")
+    )
+    _, transcript_manifest = publish_active_transcript(
+        output,
+        transcript_path,
+        source="xai-stt",
+        language=actual_language,
+        original_language=original_language or actual_language,
+        media_info=media_info,
+        details={
+            "request": request_path.name,
+            "raw": raw_path.name,
+            "language_source": language_source,
+        },
+    )
+    acquisition_path = update_acquisition(
+        output,
+        info=media_info or None,
+        transcript=transcript_manifest,
+        next_action="summarize",
+    )
+    print(acquisition_path)
 
 
 def probe_local_asr_cli(spec: dict) -> dict:
@@ -1567,19 +1950,41 @@ def normalize_asr(args: argparse.Namespace) -> None:
         raise SystemExit(f"Unsupported ASR output format: {suffix}")
     if not rows:
         raise SystemExit("No timestamped ASR segments were found in the input.")
-    transcript_path = write_transcript(output / "local-asr.json", rows)
-    attach_media_chapters(transcript_path, output)
-    transcript_jsonl, transcript_index = transcript_bundle_paths(transcript_path)
-    manifest_path = output / "local-asr-source.json"
-    manifest_path.write_text(json.dumps({
+    transcript_path = write_transcript(output / "asr.normalized.json", rows)
+    media_info = load_json_object(output / "media.info.json")
+    source_data = load_json_object(source) if suffix == ".json" else {}
+    language = normalize_language(source_data.get("language"))
+    language_source = "ASR output"
+    if language is None:
+        language, language_source = infer_asr_language(output)
+    acquisition = load_json_object(output / ACQUISITION_MANIFEST)
+    original_language = normalize_language(
+        (acquisition.get("media") or {}).get("original_language")
+    )
+    manifest_path = output / "asr.source.json"
+    write_json_atomic(manifest_path, {
         "source": str(source),
         "format": suffix.removeprefix("."),
         "segments": len(rows),
-    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(manifest_path)
-    print(transcript_path)
-    print(transcript_jsonl)
-    print(transcript_index)
+        "language": language,
+        "language_source": language_source,
+    })
+    _, transcript_manifest = publish_active_transcript(
+        output,
+        transcript_path,
+        source="local-asr",
+        language=language,
+        original_language=original_language or language,
+        media_info=media_info,
+        details={"source_manifest": manifest_path.name},
+    )
+    acquisition_path = update_acquisition(
+        output,
+        info=media_info or None,
+        transcript=transcript_manifest,
+        next_action="summarize",
+    )
+    print(acquisition_path)
 
 
 def load_transcript_jsonl(path: Path) -> list[dict]:
@@ -1680,6 +2085,10 @@ def build_parser() -> argparse.ArgumentParser:
     audio.add_argument("url")
     audio.add_argument("--output", type=Path, required=True)
     audio.add_argument("--format", default="m4a")
+    audio.add_argument(
+        "--timeout", type=float, default=900,
+        help="Per-attempt timeout in seconds for metadata and audio download",
+    )
     add_cookie_option(audio)
     audio.set_defaults(func=acquire_audio)
 
