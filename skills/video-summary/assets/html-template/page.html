@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="{{LANG}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{PAGE_TITLE}}</title>
+  <style>
+    :root{color-scheme:light;--ink:#1d1d1f;--muted:#4b5563;--line:#d8d8dc;--soft:#f5f5f7;--link:#005eb8;--page:#fff;--content:min(1200px,calc(100vw - 48px));font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC",system-ui,sans-serif}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--page);color:var(--ink);font-size:18px;line-height:1.72;text-rendering:optimizeLegibility}a{color:var(--link);text-decoration-thickness:1px;text-underline-offset:3px}a:hover{text-decoration-thickness:2px}a:focus-visible,button:focus-visible{outline:3px solid #8bc4ff;outline-offset:3px}
+    .shell{width:var(--content);margin-inline:auto}.hero{padding:72px 0 42px;border-bottom:1px solid var(--line)}h1{max-width:1000px;margin:0;font-size:clamp(2rem,4vw,3.65rem);line-height:1.08;letter-spacing:-.035em}h2{font-size:clamp(1.55rem,2.4vw,2.15rem);line-height:1.25;letter-spacing:-.02em}h3{font-size:1.25rem;line-height:1.35}.subtitle{max-width:900px;margin:20px 0 0;color:var(--muted);font-size:1.12rem}.meta{display:flex;flex-wrap:wrap;gap:10px 28px;margin-top:30px;padding-top:20px;border-top:1px solid var(--line);font-size:.9rem}.meta span{color:var(--muted)}.meta strong{color:var(--ink)}
+    main{padding:50px 0 80px}.reading{max-width:1000px}.overview{margin-bottom:54px}.overview p{max-width:880px}.chapter{padding:42px 0;border-top:1px solid var(--line);scroll-margin-top:24px}.chapter:first-of-type{border-top:0}.chapter-head{margin-bottom:22px}.time{display:inline-block;margin-bottom:9px;color:var(--link);font-size:.82rem;font-weight:700;letter-spacing:.035em}.chapter h2{margin:0}.chapter p{max-width:900px}.chapter li+li{margin-top:8px}.chapter table{width:100%;border-collapse:collapse;font-size:.92rem}.chapter th,.chapter td{padding:12px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}.chapter th{background:var(--soft)}
+    .callout{margin:28px 0;padding:18px 20px;border-left:4px solid var(--link);background:var(--soft)}.callout strong{display:block;margin-bottom:4px}.media{margin:32px 0}.media img,.media svg{display:block;max-width:100%;height:auto;border:1px solid var(--line);border-radius:4px}.media figcaption{margin-top:10px;color:var(--muted);font-size:.84rem}pre{overflow:auto;padding:18px;background:#f0f1f3;border:1px solid var(--line);border-radius:4px;font-size:.86rem;line-height:1.55}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.takeaways,.evidence{margin-top:52px;padding-top:34px;border-top:2px solid var(--ink)}footer{padding:30px 0 48px;border-top:1px solid var(--line);color:var(--muted);font-size:.82rem}
+    .toc{position:fixed;z-index:20;left:0;top:50%;transform:translateY(-50%);display:flex;align-items:stretch}.toc-trigger{width:36px;min-height:112px;padding:8px 6px;border:1px solid var(--line);border-left:0;border-radius:0 4px 4px 0;background:#fff;color:var(--ink);font:inherit;font-size:.78rem;writing-mode:vertical-rl;cursor:pointer}.toc-panel{width:min(340px,calc(100vw - 52px));max-height:70vh;overflow:auto;margin-left:6px;padding:18px;background:#fff;border:1px solid var(--line);box-shadow:0 10px 32px rgba(0,0,0,.12);visibility:hidden;opacity:0;transform:translateX(-10px);pointer-events:none;transition:opacity .16s ease,transform .16s ease,visibility .16s}.toc:hover .toc-panel,.toc:focus-within .toc-panel,.toc[data-pinned="true"] .toc-panel{visibility:visible;opacity:1;transform:none;pointer-events:auto}.toc-panel strong{display:block;margin-bottom:10px}.toc-panel ol{margin:0;padding-left:22px;font-size:.82rem;line-height:1.45}.toc-panel li+li{margin-top:9px}
+    @media(max-width:700px){:root{--content:calc(100vw - 36px)}body{font-size:17px}.hero{padding:48px 0 30px}main{padding-top:36px}.toc{top:auto;bottom:18px;transform:none}.toc-trigger{min-height:76px}.chapter{padding:34px 0}.chapter table{display:block;overflow-x:auto}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.toc-panel{transition:none}}
+  </style>
+</head>
+<body>
+  {{TOC}}
+  <header class="hero"><div class="shell">{{HEADER}}</div></header>
+  <main><article class="shell reading">{{CONTENT}}</article></main>
+  <footer><div class="shell">{{FOOTER}}</div></footer>
+  <script>document.querySelector('.toc-trigger')?.addEventListener('click',e=>{const t=e.currentTarget.closest('.toc');const p=t.dataset.pinned==='true';t.dataset.pinned=String(!p);e.currentTarget.setAttribute('aria-expanded',String(!p))});</script>
+</body>
+</html>

@@ -62,11 +62,38 @@ python3 <skill-dir>/scripts/acquire_video.py frames '<video-url>' \
 
 整片下载预算默认为 200 MiB。大小未知或超过预算时，`frames/result.json` 记录 `size-unknown` 或 `over-budget`。用户批准更大下载后，可通过 `--max-full-download-mib` 调整预算；值为 `0` 时关闭该回退。
 
-每次调用使用独立临时目录。超时和中断会终止子进程组并清理本次调用创建的半成品。结构化结果写入 `<work-dir>/frames/result.json`，包括每个请求的策略、格式、协议、分辨率、耗时、元数据刷新、失败原因和输出文件。诊断记录会隐藏签名 URL 与鉴权头。
+每次调用使用独立临时目录。超时和中断会终止子进程组并清理本次调用创建的半成品。不可变运行记录写入 `<work-dir>/frames/runs/<run-id>/result.json`；稳定入口 `<work-dir>/frames/result.json` 聚合各次运行的最新成功结果与运行索引。失败重试保留已有成功帧；同一 `id`、时间点、高度和格式且输出文件仍存在时直接复用缓存。诊断记录会隐藏签名 URL 与鉴权头。
 
 ## 查看、记录与单点清晰度升级
 
-逐张使用图像查看工具检查，并在查看后立即记录实际可见事实：
+将待检查画面分成每批 3–4 张。环境支持隔离 worker 时，把互不重叠的批次交给 worker 查看；worker 只返回或写入文字观察草稿，主 agent 后续只读取观察文字。画面总数不超过 4 张时可在主上下文直接查看。环境缺少隔离 worker 时，主 agent 每查看一批便立即写入观察草稿，完成记录后再加载下一批。
+
+观察草稿使用以下格式：
+
+```json
+{
+  "version": 1,
+  "observations": [
+    {
+      "frame_id": "control-glass-flow",
+      "readability": "readable",
+      "supports_claim": "yes",
+      "visible_facts": ["界面把规划、执行和验证显示为三个连续阶段"],
+      "note": "核心标签清晰"
+    }
+  ]
+}
+```
+
+一次写入整批观察：
+
+```bash
+python3 <skill-dir>/scripts/acquire_video.py record-frame-observations \
+  --result '<work-dir>/frames/result.json' \
+  --input '<work-dir>/frames/observation-draft.json'
+```
+
+少量单帧也可直接记录：
 
 ```bash
 python3 <skill-dir>/scripts/acquire_video.py record-frame-observation \
@@ -77,7 +104,7 @@ python3 <skill-dir>/scripts/acquire_video.py record-frame-observation \
   --visible-fact '界面把规划、执行和验证显示为三个连续阶段'
 ```
 
-观察记录写入 `<work-dir>/frames/observations.json`。后续写作优先读取该文件，图片只在需要复核原始画面时再次加载。
+观察记录以 frame id 合并写入 `<work-dir>/frames/observations.json`。整批数据会先完成校验再统一落盘。后续写作读取该文字文件；原始图片只在事实复核时再次加载。
 
 720p 画面中的核心文字或结构清晰时直接使用。实际查看结果为 `partial` 或 `unreadable` 时，为该时间点创建单条重试 manifest，并选择 1080p、1440p、PNG 或局部裁切。清晰度升级范围保持在当前 frame request。
 

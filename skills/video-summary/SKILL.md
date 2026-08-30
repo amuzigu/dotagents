@@ -22,7 +22,7 @@ description: Summarize YouTube, Bilibili, or X videos into selective, timestampe
 3. 在读取 transcript 正文前，读取 [内容筛选与长字幕分流](references/content-selection.md)。依据 `transcript.active.index.json` 选择直接阅读或分块内容地图路径，覆盖全部 active segments，并生成 `<work-dir>/content-map.json`。重点证据存在语义、引文或时间疑点时，读取 [transcript 格式与核查](references/transcript-format.md)，按 `source_cues` 返回 raw transcript 复核。
 4. 依据内容地图划分章节。章节边界跟随论点、机制、演示步骤或主题转换。重点章节展开“结论 → 机制或推理 → 证据或例子 → 重要性与边界”；简单内容保持简短。每个重要结论都能回溯到时间区间。
 5. 内容地图形成后评估视觉机会。初始计划使用“根据内容地图决定关键画面”的条件式步骤。图表、架构图、代码、UI、实物演示、动作顺序和前后对比具有验证、解释、示例或比较价值时，读取 [视觉证据](references/visual-evidence.md)，创建 `frame-requests.json` 并按点抽帧。用户明确要求关键画面时，按指定范围执行。
-6. 按 [写作与输出](#写作与输出) 生成总结。HTML 请求读取 [HTML 输出](references/html-output.md)，生成可独立打开的文件并直接交付。浏览器验收、截图和额外校验由用户明确要求触发。
+6. 按 [写作与输出](#写作与输出) 生成总结。HTML 请求读取 [HTML 输出](references/html-output.md)，把语义内容写入结构化 JSON，并用固定渲染器生成可独立打开的文件。浏览器验收、截图和额外校验由用户明确要求触发。
 7. 使用 [内容筛选与长字幕分流](references/content-selection.md) 的终稿审计完成内容验收；视觉和 HTML 分支分别使用对应 reference 的完成条件。
 
 将 `<skill-dir>` 解析为本 `SKILL.md` 所在目录，将 `<work-dir>` 解析为当前任务的临时工作目录。

@@ -224,6 +224,96 @@ def finalize_frame(temp: Path, target: Path, request: dict, result: dict) -> Non
     )
 
 
+def frame_target(frames_dir: Path, request: dict) -> Path:
+    return frames_dir / (
+        f"{request['id']}-{timestamp_label(request['timestamp_ms'] / 1000)}-"
+        f"{request['height']}p.{request['image_format']}"
+    )
+
+
+def load_frame_registry(path: Path) -> dict:
+    if not path.is_file():
+        return {"version": 2, "results": [], "runs": []}
+    try:
+        registry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": 2, "results": [], "runs": []}
+    if not isinstance(registry, dict) or registry.get("version") != 2:
+        return {"version": 2, "results": [], "runs": []}
+    if not isinstance(registry.get("results"), list):
+        registry["results"] = []
+    if not isinstance(registry.get("runs"), list):
+        registry["runs"] = []
+    return registry
+
+
+def reusable_frame(request: dict, registry: dict) -> dict | None:
+    for result in registry.get("results", []):
+        if (
+            result.get("id") == request["id"]
+            and result.get("status") == "success"
+            and result.get("timestamp_ms") == request["timestamp_ms"]
+            and result.get("requested_height") == request["height"]
+            and result.get("image_format") == request["image_format"]
+        ):
+            output = Path(str(result.get("output") or ""))
+            if output.is_file() and output.stat().st_size > 0:
+                reused = dict(result)
+                reused.update(
+                    {
+                        "claim_id": request["claim_id"],
+                        "purpose": request["purpose"],
+                        "expected_observation": request["expected_observation"],
+                        "attempts": [
+                            {
+                                "strategy": "cache",
+                                "status": "success",
+                                "elapsed_ms": 0,
+                            }
+                        ],
+                        "reused": True,
+                    }
+                )
+                return reused
+    return None
+
+
+def merge_frame_run(registry: dict, report: dict, run_path: Path) -> dict:
+    existing = {
+        item.get("id"): item
+        for item in registry.get("results", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    for result in report.get("results", []):
+        frame_id = result.get("id")
+        if not frame_id:
+            continue
+        previous = existing.get(frame_id)
+        if (
+            result.get("status") == "success"
+            or previous is None
+            or previous.get("status") != "success"
+        ):
+            existing[frame_id] = result
+    runs = list(registry.get("runs", []))
+    runs.append(
+        {
+            "run_id": report["run_id"],
+            "result": str(run_path),
+            "status": report.get("status"),
+            "elapsed_ms": report.get("elapsed_ms"),
+        }
+    )
+    return {
+        "version": 2,
+        "video_url": report.get("video_url") or registry.get("video_url"),
+        "results": list(existing.values()),
+        "runs": runs,
+        "latest_run": str(run_path),
+        "observation_file": report.get("observation_file"),
+    }
+
+
 def try_remote_frame(
     request: dict,
     result: dict,
@@ -249,10 +339,7 @@ def try_remote_frame(
         summary = candidate_summary(candidate, info.get("duration"))
         result["attempts"].append(process_attempt("remote_seek", outcome, summary))
         if outcome["returncode"] == 0:
-            target = frames_dir / (
-                f"{request['id']}-{timestamp_label(request['timestamp_ms'] / 1000)}."
-                f"{request['image_format']}"
-            )
+            target = frame_target(frames_dir, request)
             finalize_frame(temp, target, request, result)
             return True, False
         saw_expired = saw_expired or failure_code(outcome) == "url-or-auth"
@@ -313,9 +400,7 @@ def try_partial_section(
     result["attempts"].append(process_attempt("partial_section_extract", extract))
     if extract["returncode"] != 0:
         return False
-    target = frames_dir / (
-        f"{request['id']}-{timestamp_label(seconds)}.{request['image_format']}"
-    )
+    target = frame_target(frames_dir, request)
     finalize_frame(temp, target, request, result)
     return True
 
@@ -402,10 +487,7 @@ def full_download_fallback(
             process_attempt("full_download_extract", extract, summary)
         )
         if extract["returncode"] == 0:
-            target = frames_dir / (
-                f"{request['id']}-{timestamp_label(request['timestamp_ms'] / 1000)}."
-                f"{request['image_format']}"
-            )
+            target = frame_target(frames_dir, request)
             finalize_frame(temp, target, request, result)
     return report
 
@@ -425,9 +507,15 @@ def acquire_frames(args: argparse.Namespace) -> None:
     manifest_path = args.manifest.resolve()
     result_path = frames_dir / "result.json"
     observations_path = frames_dir / "observations.json"
+    registry = load_frame_registry(result_path)
+    run_id = f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    runs_dir = frames_dir / "runs" / run_id
+    runs_dir.mkdir(parents=True, exist_ok=False)
+    run_path = runs_dir / "result.json"
     started = time.monotonic()
     report = {
         "version": 1,
+        "run_id": run_id,
         "video_url": args.url,
         "manifest": str(manifest_path),
         "status": "running",
@@ -444,8 +532,10 @@ def acquire_frames(args: argparse.Namespace) -> None:
     try:
         requests = load_frame_requests(manifest_path, args)
         for request in requests:
+            cached = reusable_frame(request, registry)
             report["results"].append(
-                {
+                cached
+                or {
                     "id": request["id"],
                     "claim_id": request["claim_id"],
                     "purpose": request["purpose"],
@@ -456,9 +546,18 @@ def acquire_frames(args: argparse.Namespace) -> None:
                     "attempts": [],
                 }
             )
+        unresolved = [
+            (request, result)
+            for request, result in zip(requests, report["results"])
+            if result.get("status") != "success"
+        ]
+        for _, result in zip(requests, report["results"]):
+            if result.get("reused"):
+                print(result["output"])
+
         info_path = output / "media.info.json"
         info = None
-        if info_path.is_file():
+        if unresolved and info_path.is_file():
             try:
                 loaded = json.loads(info_path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict) and loaded.get("formats"):
@@ -466,15 +565,15 @@ def acquire_frames(args: argparse.Namespace) -> None:
                     report["metadata"].append({"source": "cached", "status": "success"})
             except json.JSONDecodeError:
                 pass
-        if info is None:
+        if unresolved and info is None:
             info, outcome = refresh_media_info(args, output)
             report["metadata"].append(process_attempt("metadata_fetch", outcome))
-        if info is None:
+        if unresolved and info is None:
             raise RuntimeError("Unable to acquire media metadata for frame extraction.")
 
         pending: list[tuple[dict, dict]] = []
         refreshed = False
-        for request, result in zip(requests, report["results"]):
+        for request, result in unresolved:
             success, expired = try_remote_frame(
                 request,
                 result,
@@ -507,13 +606,16 @@ def acquire_frames(args: argparse.Namespace) -> None:
                 continue
             pending.append((request, result))
 
-        report["full_download"] = full_download_fallback(
-            args,
-            pending,
-            info,
-            temp_dir,
-            frames_dir,
-        )
+        if pending:
+            report["full_download"] = full_download_fallback(
+                args,
+                pending,
+                info,
+                temp_dir,
+                frames_dir,
+            )
+        else:
+            report["full_download"] = {"attempted": False, "status": "unneeded"}
         for request, result in pending:
             if result["status"] == "success":
                 print(result["output"])
@@ -549,7 +651,8 @@ def acquire_frames(args: argparse.Namespace) -> None:
         fatal = str(error)
     finally:
         report["elapsed_ms"] = round((time.monotonic() - started) * 1000)
-        write_json_atomic(result_path, report)
+        write_json_atomic(run_path, report)
+        write_json_atomic(result_path, merge_frame_run(registry, report, run_path))
         shutil.rmtree(temp_dir, ignore_errors=True)
     if not observations_path.exists():
         write_json_atomic(observations_path, {"version": 1, "observations": []})
@@ -561,38 +664,98 @@ def acquire_frames(args: argparse.Namespace) -> None:
         )
 
 
-def record_frame_observation(args: argparse.Namespace) -> None:
-    result_path = args.result.resolve()
+def load_successful_frames(result_path: Path) -> dict[str, dict]:
     if not result_path.is_file():
         raise SystemExit(f"Frame result is unavailable: {result_path}")
     result = json.loads(result_path.read_text(encoding="utf-8"))
-    frame = next(
-        (item for item in result.get("results", []) if item.get("id") == args.frame_id),
-        None,
-    )
-    if frame is None or frame.get("status") != "success":
-        raise SystemExit(f"Successful frame id is unavailable: {args.frame_id}")
+    return {
+        item["id"]: item
+        for item in result.get("results", [])
+        if isinstance(item, dict) and item.get("id") and item.get("status") == "success"
+    }
+
+
+def validate_observation(raw: dict, frames: dict[str, dict]) -> dict:
+    frame_id = str(raw.get("frame_id") or "")
+    frame = frames.get(frame_id)
+    if frame is None:
+        raise SystemExit(f"Successful frame id is unavailable: {frame_id}")
+    readability = raw.get("readability")
+    if readability not in {"readable", "partial", "unreadable"}:
+        raise SystemExit(f"Invalid readability for frame {frame_id}: {readability}")
+    supports_claim = raw.get("supports_claim")
+    if supports_claim not in {"yes", "partial", "no", "uncertain"}:
+        raise SystemExit(
+            f"Invalid supports_claim for frame {frame_id}: {supports_claim}"
+        )
+    visible_facts = raw.get("visible_facts", [])
+    if not isinstance(visible_facts, list) or not all(
+        isinstance(item, str) and item.strip() for item in visible_facts
+    ):
+        raise SystemExit(f"visible_facts must be a string list for frame {frame_id}")
+    return {
+        "frame_id": frame_id,
+        "claim_id": frame.get("claim_id"),
+        "purpose": frame.get("purpose"),
+        "output": frame.get("output"),
+        "readability": readability,
+        "visible_facts": [item.strip() for item in visible_facts],
+        "supports_claim": supports_claim,
+        "note": raw.get("note"),
+    }
+
+
+def write_frame_observations(result_path: Path, raw_items: list[dict]) -> Path:
+    frames = load_successful_frames(result_path)
+    entries = [validate_observation(raw, frames) for raw in raw_items]
     observations_path = result_path.parent / "observations.json"
     if observations_path.is_file():
         observations = json.loads(observations_path.read_text(encoding="utf-8"))
     else:
         observations = {"version": 1, "observations": []}
-    entry = {
-        "frame_id": args.frame_id,
-        "claim_id": frame.get("claim_id"),
-        "purpose": frame.get("purpose"),
-        "output": frame.get("output"),
-        "readability": args.readability,
-        "visible_facts": args.visible_fact,
-        "supports_claim": args.supports_claim,
-        "note": args.note,
-    }
+    updated_ids = {entry["frame_id"] for entry in entries}
     items = [
         item
         for item in observations.get("observations", [])
-        if item.get("frame_id") != args.frame_id
+        if item.get("frame_id") not in updated_ids
     ]
-    items.append(entry)
+    items.extend(entries)
     observations["observations"] = items
     write_json_atomic(observations_path, observations)
+    return observations_path
+
+
+def record_frame_observation(args: argparse.Namespace) -> None:
+    result_path = args.result.resolve()
+    observations_path = write_frame_observations(
+        result_path,
+        [
+            {
+                "frame_id": args.frame_id,
+                "readability": args.readability,
+                "visible_facts": args.visible_fact,
+                "supports_claim": args.supports_claim,
+                "note": args.note,
+            }
+        ],
+    )
+    print(observations_path)
+
+
+def record_frame_observations(args: argparse.Namespace) -> None:
+    input_path = args.input.resolve()
+    if not input_path.is_file():
+        raise SystemExit(f"Observation draft is unavailable: {input_path}")
+    draft = json.loads(input_path.read_text(encoding="utf-8"))
+    if not isinstance(draft, dict) or draft.get("version") != 1:
+        raise SystemExit("Observation draft must use version 1.")
+    raw_items = draft.get("observations")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise SystemExit("Observation draft must contain observations.")
+    if not all(isinstance(item, dict) for item in raw_items):
+        raise SystemExit("Each observation draft entry must be an object.")
+    frame_ids = [str(item.get("frame_id") or "") for item in raw_items]
+    if len(frame_ids) != len(set(frame_ids)):
+        raise SystemExit("Observation draft contains duplicate frame_id values.")
+    observations_path = write_frame_observations(args.result.resolve(), raw_items)
     print(observations_path)

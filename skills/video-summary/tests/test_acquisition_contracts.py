@@ -66,6 +66,13 @@ class AcquisitionContractTests(unittest.TestCase):
                 "--supports-claim",
                 "yes",
             ],
+            "record-frame-observations": [
+                "record-frame-observations",
+                "--result",
+                "/tmp/result.json",
+                "--input",
+                "/tmp/observations.json",
+            ],
             "transcribe-xai": [
                 "transcribe-xai",
                 "--audio",
@@ -201,6 +208,95 @@ class MediaFallbackContractTests(unittest.TestCase):
         self.assertFalse(report["attempted"])
         self.assertEqual(report["status"], "blocked")
         self.assertEqual(report["reason"], "over-budget")
+
+
+class FrameStateContractTests(unittest.TestCase):
+    def successful_frame(self, output: Path, *, height=720):
+        output.write_bytes(b"frame")
+        return {
+            "id": "diagram",
+            "claim_id": "claim-1",
+            "purpose": "explanation",
+            "timestamp_ms": 10_000,
+            "requested_height": height,
+            "image_format": "png",
+            "status": "success",
+            "output": str(output),
+        }
+
+    def test_failed_retry_preserves_previous_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "diagram.png"
+            previous = self.successful_frame(output)
+            registry = {"version": 2, "results": [previous], "runs": []}
+            report = {
+                "run_id": "retry",
+                "video_url": "https://example.test/video",
+                "status": "failed",
+                "elapsed_ms": 10,
+                "observation_file": str(Path(directory) / "observations.json"),
+                "results": [{"id": "diagram", "status": "failed"}],
+            }
+            merged = frames.merge_frame_run(
+                registry, report, Path(directory) / "runs/retry/result.json"
+            )
+            self.assertEqual(merged["results"], [previous])
+            self.assertEqual(merged["runs"][0]["status"], "failed")
+
+    def test_matching_frame_is_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "diagram.png"
+            existing = self.successful_frame(output)
+            request = {
+                "id": "diagram",
+                "claim_id": "claim-2",
+                "purpose": "evidence",
+                "expected_observation": "shows the diagram",
+                "timestamp_ms": 10_000,
+                "height": 720,
+                "image_format": "png",
+            }
+            reused = frames.reusable_frame(
+                request, {"version": 2, "results": [existing]}
+            )
+            self.assertTrue(reused["reused"])
+            self.assertEqual(reused["attempts"][0]["strategy"], "cache")
+            self.assertEqual(reused["claim_id"], "claim-2")
+
+    def test_batch_observations_validate_before_atomic_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frame = self.successful_frame(root / "diagram.png")
+            result_path = root / "result.json"
+            result_path.write_text(
+                json.dumps({"version": 2, "results": [frame]}), encoding="utf-8"
+            )
+            output = frames.write_frame_observations(
+                result_path,
+                [
+                    {
+                        "frame_id": "diagram",
+                        "readability": "readable",
+                        "supports_claim": "yes",
+                        "visible_facts": ["three connected stages"],
+                    }
+                ],
+            )
+            recorded = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(recorded["observations"][0]["claim_id"], "claim-1")
+            with self.assertRaises(SystemExit):
+                frames.write_frame_observations(
+                    result_path,
+                    [
+                        {
+                            "frame_id": "missing",
+                            "readability": "readable",
+                            "supports_claim": "yes",
+                            "visible_facts": [],
+                        }
+                    ],
+                )
+            self.assertEqual(json.loads(output.read_text()), recorded)
 
 
 if __name__ == "__main__":

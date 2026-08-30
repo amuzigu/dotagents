@@ -14,6 +14,7 @@ from .core import DEFAULT_FALLBACK_LANGUAGES
 from .frames import (
     acquire_frames,
     record_frame_observation,
+    record_frame_observations,
 )
 from .transcript import (
     timestamp_ms_argument,
@@ -115,6 +116,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     observe.add_argument("--note")
     observe.set_defaults(func=record_frame_observation)
+
+    observe_many = subparsers.add_parser(
+        "record-frame-observations",
+        help="Validate and record a batch of viewed-frame observations",
+    )
+    observe_many.add_argument("--result", type=Path, required=True)
+    observe_many.add_argument("--input", type=Path, required=True)
+    observe_many.set_defaults(func=record_frame_observations)
 
     xai = subparsers.add_parser(
         "transcribe-xai", help="Transcribe audio with xAI Speech-to-Text"
