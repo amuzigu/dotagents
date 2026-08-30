@@ -4,6 +4,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
 
 
@@ -177,6 +178,69 @@ class TranscriptCompactionTests(unittest.TestCase):
             rendered = target.read_text()
             self.assertIn("Cues: `0–1`", rendered)
             self.assertEqual(rendered.count("Build reliable agents"), 2)
+
+
+class FrameRequestTests(unittest.TestCase):
+    def write_manifest(self, directory, value):
+        path = Path(directory) / "frame-requests.json"
+        path.write_text(json.dumps(value))
+        return path
+
+    def test_accepts_visual_value_without_strict_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_manifest(directory, {
+                "version": 2,
+                "requests": [{
+                    "id": "ui-example",
+                    "claim_id": "support-02",
+                    "timestamp_ms": 12_000,
+                    "purpose": "example",
+                    "expected_observation": "展示设置面板中的选项排列",
+                }],
+            })
+            requests = MODULE.load_frame_requests(
+                path, Namespace(height=720, image_format="jpg"),
+            )
+            self.assertEqual(requests[0]["purpose"], "example")
+            self.assertNotIn("gate", requests[0])
+
+    def test_requires_visual_purpose(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_manifest(directory, {
+                "version": 2,
+                "requests": [{
+                    "id": "ui-example",
+                    "claim_id": "support-02",
+                    "timestamp_ms": 12_000,
+                    "expected_observation": "展示设置面板中的选项排列",
+                }],
+            })
+            with self.assertRaises(SystemExit):
+                MODULE.load_frame_requests(
+                    path, Namespace(height=720, image_format="jpg"),
+                )
+
+    def test_rejects_version_one_gate_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_manifest(directory, {
+                "version": 1,
+                "requests": [{
+                    "id": "legacy",
+                    "claim_id": "claim-01",
+                    "timestamp_ms": 1_000,
+                    "gate": {
+                        "core": True,
+                        "irreplaceable": True,
+                        "information_gain": True,
+                        "readable_expected": True,
+                    },
+                    "expected_observation": "旧门槛",
+                }],
+            })
+            with self.assertRaises(SystemExit):
+                MODULE.load_frame_requests(
+                    path, Namespace(height=720, image_format="jpg"),
+                )
 
 
 if __name__ == "__main__":

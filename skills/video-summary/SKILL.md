@@ -1,6 +1,6 @@
 ---
 name: video-summary
-description: Summarize a YouTube, Bilibili, or X video into a selective, timestamped Markdown or standalone HTML document grounded in captions or ASR, with frames reserved for core conclusions that require readable visual evidence. Use for lectures, interviews, reviews, demonstrations, and visual explainers where readers need the main argument, adequate depth, and minimal peripheral detail.
+description: Summarize a YouTube, Bilibili, or X video into a selective, timestamped Markdown or standalone HTML document grounded in captions or ASR, with targeted frames when visual evidence, examples, or comparisons improve understanding. Use for lectures, interviews, reviews, demonstrations, and visual explainers where readers need the main argument, adequate depth, and minimal peripheral detail.
 ---
 
 # Video Summary
@@ -22,9 +22,9 @@ description: Summarize a YouTube, Bilibili, or X video into a selective, timesta
 3. 按 `acquisition.json` 的 `next_action` 推进。值为 `download_audio` 或 `transcribe` 时，下载音频并读取 [references/local-asr-cli.md](references/local-asr-cli.md)。复用健康的本地 CLI 与完整模型缓存。安装工具、下载模型、使用付费 API、登录态或浏览器 Cookie 前取得用户明确许可。ASR 归一化后重新读取 `acquisition.json`，确认 transcript 已切换为 `ready`。
 4. 通读完整 active transcript，写出一句“视频主问题”和 3–7 条候选核心结论。长 transcript 根据 `transcript.active.index.json` 的连续 chunks 调用 `transcript-slice` 读取 `transcript.active.jsonl`，逐块覆盖全部规范化 segment；每个 segment 恰好进入一次阅读范围。随后读取 [references/content-selection.md](references/content-selection.md)，按其注意力预算、内容分级和删除测试形成内容地图。完成条件：全部 active segment 已覆盖；每条核心结论都有时间范围和证据；支撑信息有明确用途；外围内容已从默认大纲移除。
 5. 依据内容地图划分章节。章节边界跟随论点、机制、演示步骤或主题转换。重点章节展开“结论 → 机制或推理 → 证据或例子 → 重要性与边界”；简单内容保持简短。每个重要结论都能回溯到对应时间区间。
-6. 完整读取 transcript 并形成内容地图后，执行严格视觉门槛。初始计划只保留“评估核心结论是否强依赖视觉证据”这一条件式步骤。默认总结只有在核心性、不可替代性、信息增量和预期可读性同时成立时，才读取 [references/visual-evidence.md](references/visual-evidence.md)，创建 `frame-requests.json` 并调用远程按点抽帧。其余内容直接使用 transcript 与文字解释。用户明确要求关键画面时，按指定范围执行，并继续检查来源与清晰度。
+6. 完整读取 transcript 并形成内容地图后，评估视觉机会。初始计划保留“根据内容地图决定关键画面”这一条件式步骤。图表、架构图、代码、UI、实物演示、动作顺序或前后对比能验证结论、解释机制或让重要例子更具体时，读取 [references/visual-evidence.md](references/visual-evidence.md)，创建 `frame-requests.json` 并调用远程按点抽帧。每个具有明确视觉增益的章节可选择一张代表性画面；纯口播和普通人物访谈可以继续使用文字。用户明确要求关键画面时，按指定范围执行，并继续检查来源与清晰度。
 7. 按 [写作与输出](#写作与输出) 生成总结。用户指定 HTML 时，读取 [references/html-output.md](references/html-output.md)，生成可独立打开的 `.html` 文件并直接交付。浏览器验收、截图和额外校验仅在用户明确要求时执行。
-8. 执行终稿审计：主线与重点完整、外围信息克制、时间区间合理、观点归属清楚、数字和专有名词经交叉核对、总结者扩展带标签、每张截图通过四项视觉门槛并具有查看记录、结论与 Take-away 各自提供信息增量。
+8. 执行终稿审计：主线与重点完整、外围信息克制、时间区间合理、观点归属清楚、数字和专有名词经交叉核对、总结者扩展带标签、每张截图具有明确用途与查看记录、结论与 Take-away 各自提供信息增量。
 
 ## 详略模式
 
@@ -63,7 +63,7 @@ description: Summarize a YouTube, Bilibili, or X video into a selective, timesta
 按需增加：
 
 - `Take-away`：视频包含可迁移的方法、决策原则或实践价值时，提炼少量可行动结论。每条都可追溯到正文，并补充适用边界。
-- `关键画面`：核心结论强依赖视觉证据时，嵌入通过四项视觉门槛的清晰截图，并标明时间戳与信息增量。
+- `关键画面`：画面能提供验证、解释、示例或比较价值时，嵌入清晰截图，并标明时间戳与具体可见信息。
 - `结构重绘`：简单图示可以使用 ASCII；关系、流程或层级复杂时使用 Mermaid；空间布局、精确标注或独立图像文件使用 SVG。
 - `证据与局限`：说明 transcript 来源、自动字幕误差、覆盖缺口、听辨不确定项和画面局限。
 
@@ -71,4 +71,4 @@ description: Summarize a YouTube, Bilibili, or X video into a selective, timesta
 
 ## 完成标准
 
-未观看视频的读者能够理解主线、重点内容的完整论证、关键证据和适用边界，并能通过时间区间返回原片核查。文档的每一节都消耗读者注意力来换取清楚的理解增量。文字作为默认表达；核心结论通过四项视觉门槛后，使用最少且足够的清晰画面。每张交付截图在观察记录中具有实际可见事实。辅助理解与落地建议具有明确归属，Take-away 简洁、可追溯且可应用。
+未观看视频的读者能够理解主线、重点内容的完整论证、关键证据和适用边界，并能通过时间区间返回原片核查。文档的每一节都消耗读者注意力来换取清楚的理解增量。文字负责论证，画面负责验证、解释、示例或比较；视觉型视频可以积极使用少量代表性截图。每张交付截图在观察记录中具有实际可见事实。辅助理解与落地建议具有明确归属，Take-away 简洁、可追溯且可应用。

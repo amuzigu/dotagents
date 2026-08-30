@@ -1508,14 +1508,14 @@ def load_frame_requests(path: Path, args: argparse.Namespace) -> list[dict]:
     if not path.is_file():
         raise SystemExit(f"Frame request manifest is unavailable: {path}")
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("version") != 1:
-        raise SystemExit("frame-requests.json must use version 1.")
+    if not isinstance(data, dict) or data.get("version") != 2:
+        raise SystemExit("frame-requests.json must use version 2.")
     raw_requests = data.get("requests")
     if not isinstance(raw_requests, list) or not raw_requests:
         raise SystemExit("frame-requests.json must contain at least one request.")
     requests = []
     seen: set[str] = set()
-    gate_fields = ("core", "irreplaceable", "information_gain", "readable_expected")
+    purposes = {"evidence", "explanation", "example", "comparison"}
     for index, raw in enumerate(raw_requests):
         if not isinstance(raw, dict):
             raise SystemExit(f"Frame request {index} must be an object.")
@@ -1525,9 +1525,12 @@ def load_frame_requests(path: Path, args: argparse.Namespace) -> list[dict]:
         if request_id in seen:
             raise SystemExit(f"Duplicate frame request id: {request_id}")
         seen.add(request_id)
-        gate = raw.get("gate") if isinstance(raw.get("gate"), dict) else {}
-        if not raw.get("user_requested") and not all(gate.get(field) is True for field in gate_fields):
-            raise SystemExit(f"Frame request {request_id} has not passed the strict visual gate.")
+        purpose = str(raw.get("purpose") or "").strip()
+        if purpose not in purposes:
+            raise SystemExit(
+                f"Frame request {request_id} needs purpose: "
+                "evidence, explanation, example, or comparison."
+            )
         timestamp_ms = raw.get("timestamp_ms")
         if timestamp_ms is None and raw.get("timestamp") is not None:
             timestamp_ms = parse_clock(str(raw["timestamp"]))
@@ -1551,8 +1554,8 @@ def load_frame_requests(path: Path, args: argparse.Namespace) -> list[dict]:
             "image_format": image_format,
             "crop": str(raw.get("crop") or "").strip() or None,
             "expected_observation": expected,
+            "purpose": purpose,
             "user_requested": bool(raw.get("user_requested")),
-            "gate": gate,
         })
     return requests
 
@@ -1824,6 +1827,7 @@ def acquire_frames(args: argparse.Namespace) -> None:
             report["results"].append({
                 "id": request["id"],
                 "claim_id": request["claim_id"],
+                "purpose": request["purpose"],
                 "timestamp_ms": request["timestamp_ms"],
                 "requested_height": request["height"],
                 "image_format": request["image_format"],
@@ -1931,6 +1935,7 @@ def record_frame_observation(args: argparse.Namespace) -> None:
     entry = {
         "frame_id": args.frame_id,
         "claim_id": frame.get("claim_id"),
+        "purpose": frame.get("purpose"),
         "output": frame.get("output"),
         "readability": args.readability,
         "visible_facts": args.visible_fact,
